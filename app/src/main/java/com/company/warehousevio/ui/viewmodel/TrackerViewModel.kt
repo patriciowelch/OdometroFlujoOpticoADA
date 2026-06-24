@@ -78,8 +78,20 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             currentSessionId = db.sessionDao().insert(session)
 
             startTracking()
+            startTrackingStateMonitor()
             connectTransport(useDebugTunnel)
         }
+    }
+
+    private fun startTrackingStateMonitor() {
+        poseTracker.trackingStateFlow
+            .onEach { (state, reason) ->
+                _uiState.value = _uiState.value.copy(
+                    trackingState = state,
+                    trackingFailureReason = reason,
+                )
+            }
+            .launchIn(viewModelScope)
     }
 
     private fun startTracking() {
@@ -189,7 +201,8 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             trackingJob?.cancel()
             networkJob?.cancel()
             transport?.close()
-            arSessionManager.pause()  // ya es suspend, corre en ArCoreDispatcher
+            arSessionManager.pause()
+            arSessionManager.destroy()
             if (currentSessionId > 0) {
                 val session = db.sessionDao().getById(currentSessionId)
                 session?.let {

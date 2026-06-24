@@ -43,6 +43,12 @@ class PoseTracker(
     private var wasTracking = false
     private var skipNextDelta = false
 
+    // Expone el estado de tracking en tiempo real (incluso cuando no hay pose).
+    val trackingStateFlow = kotlinx.coroutines.flow.MutableStateFlow(
+        com.company.warehousevio.core.model.TrackingState.STOPPED to
+        com.company.warehousevio.core.model.TrackingFailureReason.NONE
+    )
+
     val poseFlow: Flow<PoseSnapshot> = flow {
         while (true) {
             val frame = arSessionManager.update()
@@ -55,6 +61,21 @@ class PoseTracker(
 
             val camera = frame.camera
             val currentlyTracking = camera.trackingState == ArTrackingState.TRACKING
+
+            // Actualizar estado de tracking aunque no haya pose válida
+            val modelState = when (camera.trackingState) {
+                ArTrackingState.TRACKING -> com.company.warehousevio.core.model.TrackingState.TRACKING
+                ArTrackingState.PAUSED   -> com.company.warehousevio.core.model.TrackingState.PAUSED
+                ArTrackingState.STOPPED  -> com.company.warehousevio.core.model.TrackingState.STOPPED
+            }
+            val modelReason = when (camera.trackingFailureReason) {
+                com.google.ar.core.TrackingFailureReason.INSUFFICIENT_FEATURES -> com.company.warehousevio.core.model.TrackingFailureReason.INSUFFICIENT_FEATURES
+                com.google.ar.core.TrackingFailureReason.EXCESSIVE_MOTION      -> com.company.warehousevio.core.model.TrackingFailureReason.EXCESSIVE_MOTION
+                com.google.ar.core.TrackingFailureReason.INSUFFICIENT_LIGHT    -> com.company.warehousevio.core.model.TrackingFailureReason.INSUFFICIENT_LIGHT
+                com.google.ar.core.TrackingFailureReason.CAMERA_UNAVAILABLE    -> com.company.warehousevio.core.model.TrackingFailureReason.CAMERA_UNAVAILABLE
+                else -> com.company.warehousevio.core.model.TrackingFailureReason.NONE
+            }
+            trackingStateFlow.value = modelState to modelReason
 
             if (!currentlyTracking) {
                 wasTracking = false
