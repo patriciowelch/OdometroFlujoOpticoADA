@@ -1,0 +1,2 @@
+-keep class com.company.warehousevio.network.** { *; }
+-keepattributes *Annotation*
