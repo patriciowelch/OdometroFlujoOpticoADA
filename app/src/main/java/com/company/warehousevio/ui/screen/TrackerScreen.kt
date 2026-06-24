@@ -97,6 +97,18 @@ fun TrackerScreen(
 
             Spacer(modifier = Modifier.weight(1f))
 
+            // Botón de flash — siempre visible
+            OutlinedButton(
+                onClick = { vm.toggleTorch() },
+                modifier = Modifier.fillMaxWidth(),
+                colors = if (state.torchOn)
+                    ButtonDefaults.outlinedButtonColors(containerColor = Color(0xFFFFEB3B).copy(alpha = 0.2f))
+                else
+                    ButtonDefaults.outlinedButtonColors(),
+            ) {
+                Text(if (state.torchOn) "Linterna ON — apagar" else "Linterna — encender")
+            }
+
             if (!state.isSessionActive) {
                 Button(
                     onClick = { cameraPermission.launch(Manifest.permission.CAMERA) },

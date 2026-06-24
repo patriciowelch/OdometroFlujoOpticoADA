@@ -135,6 +135,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun resetTrajectory() {
+        _liveState.value = _liveState.value.copy(
+            trajectory = emptyList(),
+            accumulatedDistanceM = 0f,
+            recentMotionEvents = emptyList(),
+            latestPose = null,
+        )
+        _originSetup.value = OriginSetup()
+    }
+
     fun setOrigin(pixelX: Float, pixelY: Float, headingRad: Float, scalePixelsPerMeter: Float) {
         _originSetup.value = OriginSetup(pixelX, pixelY, headingRad, scalePixelsPerMeter, isSet = true)
         viewModelScope.launch {

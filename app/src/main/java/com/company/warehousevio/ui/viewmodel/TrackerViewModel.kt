@@ -1,6 +1,7 @@
 package com.company.warehousevio.ui.viewmodel
 
 import android.app.Application
+import android.hardware.camera2.CameraManager
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -38,6 +39,7 @@ data class TrackerUiState(
     val trackingState: TrackingState = TrackingState.STOPPED,
     val trackingFailureReason: TrackingFailureReason = TrackingFailureReason.NONE,
     val connectionError: String? = null,
+    val torchOn: Boolean = false,
 )
 
 class TrackerViewModel(application: Application) : AndroidViewModel(application) {
@@ -61,10 +63,11 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSessionActive = true, connectionError = null)
 
-            // Secuencia obligatoria ARCore: createSession → resume → update loop
+            // createSession() abre la cámara (SharedCamera) y llama resume() internamente.
             try {
                 arSessionManager.createSession()
-                arSessionManager.resume()
+                // Si el usuario encendió la linterna antes de la sesión, sincronizar estado.
+                if (_uiState.value.torchOn) arSessionManager.setTorch(true)
             } catch (e: Exception) {
                 Log.e(TAG, "Error iniciando ARCore: ${e.javaClass.simpleName} — ${e.message}", e)
                 _uiState.value = _uiState.value.copy(
@@ -201,8 +204,8 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             trackingJob?.cancel()
             networkJob?.cancel()
             transport?.close()
-            arSessionManager.pause()
             arSessionManager.destroy()
+            poseTracker.reset()
             if (currentSessionId > 0) {
                 val session = db.sessionDao().getById(currentSessionId)
                 session?.let {
@@ -214,8 +217,29 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
         }
     }
 
+    fun toggleTorch() {
+        val newState = !_uiState.value.torchOn
+        if (_uiState.value.isSessionActive) {
+            // ARCore tiene la cámara: inyectar torch en sus CaptureRequest vía SharedCamera.
+            viewModelScope.launch {
+                arSessionManager.setTorch(newState)
+                _uiState.value = _uiState.value.copy(torchOn = newState)
+            }
+        } else {
+            // Sin sesión: usar CameraManager directamente.
+            val cm = getApplication<Application>().getSystemService(CameraManager::class.java)
+            val cameraId = cm.cameraIdList.firstOrNull() ?: return
+            runCatching { cm.setTorchMode(cameraId, newState) }
+                .onSuccess { _uiState.value = _uiState.value.copy(torchOn = newState) }
+                .onFailure { Log.e(TAG, "Error al cambiar flash: ${it.message}") }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        if (_uiState.value.torchOn) {
+            viewModelScope.launch { arSessionManager.setTorch(false) }
+        }
         viewModelScope.launch { arSessionManager.destroy() }
     }
 }

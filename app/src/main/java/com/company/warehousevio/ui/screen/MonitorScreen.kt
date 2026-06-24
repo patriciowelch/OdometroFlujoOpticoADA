@@ -189,6 +189,13 @@ fun MonitorScreen(
                         onClick = { settingOrigin = true },
                         modifier = Modifier.weight(1f),
                     ) { Text("Fijar origen") }
+                    OutlinedButton(
+                        onClick = { vm.resetTrajectory(); settingOrigin = false },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error,
+                        ),
+                    ) { Text("↺ Reset") }
                 }
 
                 // Eventos manuales
