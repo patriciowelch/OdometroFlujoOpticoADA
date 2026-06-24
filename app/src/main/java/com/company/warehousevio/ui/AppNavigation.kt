@@ -6,12 +6,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.company.warehousevio.ui.screen.MonitorScreen
 import com.company.warehousevio.ui.screen.RoleSelectionScreen
+import com.company.warehousevio.ui.screen.SessionHistoryScreen
 import com.company.warehousevio.ui.screen.TrackerScreen
 
 object Routes {
     const val ROLE_SELECTION = "role_selection"
     const val TRACKER = "tracker"
     const val MONITOR = "monitor"
+    const val HISTORY = "history"
 }
 
 @Composable
@@ -29,7 +31,13 @@ fun AppNavigation() {
             TrackerScreen(onBack = { navController.popBackStack() })
         }
         composable(Routes.MONITOR) {
-            MonitorScreen(onBack = { navController.popBackStack() })
+            MonitorScreen(
+                onBack = { navController.popBackStack() },
+                onHistory = { navController.navigate(Routes.HISTORY) },
+            )
+        }
+        composable(Routes.HISTORY) {
+            SessionHistoryScreen(onBack = { navController.popBackStack() })
         }
     }
 }

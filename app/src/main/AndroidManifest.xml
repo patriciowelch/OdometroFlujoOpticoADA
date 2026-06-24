@@ -23,6 +23,7 @@
     <meta-data android:name="com.google.ar.core" android:value="optional" />
 
     <application
+        android:name=".App"
         android:allowBackup="true"
         android:label="@string/app_name"
         android:theme="@style/Theme.WarehouseVIO"

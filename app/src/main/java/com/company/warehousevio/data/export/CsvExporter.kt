@@ -31,6 +31,10 @@ class CsvExporter(
         val eventsMap = events.groupBy { it.timestampMs }
 
         val sb = StringBuilder()
+        // Cabecera de metadatos: fecha de descarga e ID de sesión
+        val downloadTs = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        sb.appendLine("# descarga: $downloadTs")
+        sb.appendLine("# sesion_id: $sessionId")
         sb.appendLine("timestamp_ms,accumulated_distance_m,instantaneous_velocity_ms,x,z,motion_state,event_type,event_source")
 
         val allTimestamps = (poses.map { it.timestampMs } + events.map { it.timestampMs })

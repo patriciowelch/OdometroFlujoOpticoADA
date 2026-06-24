@@ -1,5 +1,8 @@
 package com.company.warehousevio.ui.screen
 
+import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -21,8 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,28 +37,57 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.company.warehousevio.core.geometry.worldToCanvas
 import com.company.warehousevio.core.model.ManualEventType
 import com.company.warehousevio.core.model.TrackingState
 import com.company.warehousevio.monitor.OriginSetup
+import com.company.warehousevio.network.WifiDirectState
 import com.company.warehousevio.ui.viewmodel.MonitorViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MonitorScreen(
     onBack: () -> Unit,
+    onHistory: () -> Unit = {},
     vm: MonitorViewModel = viewModel(),
 ) {
     val state by vm.liveState.collectAsState()
     val origin by vm.originSetup.collectAsState()
+    val mapImageUri by vm.mapImageUri.collectAsState()
+    val wifiDirectState by vm.wifiDirectState.collectAsState()
     val context = LocalContext.current
+
     var settingOrigin by remember { mutableStateOf(false) }
+    var useWifiDirect by remember { mutableStateOf(false) }
+
+    // Bitmap del croquis cargado en memoria
+    var mapBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(mapImageUri) {
+        mapBitmap = mapImageUri?.let { uri ->
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    BitmapFactory.decodeStream(stream)?.asImageBitmap()
+                }
+            }.getOrNull()
+        }
+    }
+
+    // Selector de imagen del croquis
+    val imagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri?.let { vm.setMapImage(it) }
+    }
 
     Scaffold(
         topBar = {
@@ -65,6 +99,10 @@ fun MonitorScreen(
                     }
                 },
                 actions = {
+                    OutlinedButton(
+                        onClick = onHistory,
+                        modifier = Modifier.padding(end = 4.dp),
+                    ) { Text("Historial") }
                     OutlinedButton(
                         onClick = { vm.exportCsv(context) },
                         modifier = Modifier.padding(end = 8.dp),
@@ -94,6 +132,17 @@ fun MonitorScreen(
                     },
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
+                    // Fondo: croquis del almacén si existe
+                    mapBitmap?.let { bmp ->
+                        drawImage(
+                            image = bmp,
+                            srcOffset = IntOffset.Zero,
+                            srcSize = IntSize(bmp.width, bmp.height),
+                            dstOffset = IntOffset.Zero,
+                            dstSize = IntSize(size.width.toInt(), size.height.toInt()),
+                        )
+                    }
+
                     if (state.trajectory.size < 2 || !origin.isSet) return@Canvas
 
                     val path = Path()
@@ -153,6 +202,54 @@ fun MonitorScreen(
             // ── Panel inferior ───────────────────────────────────────────────
             Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
 
+                // ── Selector de tipo de conexión ─────────────────────────────
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text("Conexión", style = MaterialTheme.typography.labelMedium)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            if (!useWifiDirect) {
+                                Button(
+                                    onClick = { useWifiDirect = false },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("ADB Tunnel") }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { useWifiDirect = false },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("ADB Tunnel") }
+                            }
+                            if (useWifiDirect) {
+                                Button(
+                                    onClick = { useWifiDirect = true },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Wi-Fi Direct") }
+                            } else {
+                                OutlinedButton(
+                                    onClick = { useWifiDirect = true },
+                                    modifier = Modifier.weight(1f),
+                                ) { Text("Wi-Fi Direct") }
+                            }
+                        }
+                        // Estado Wi-Fi Direct cuando está seleccionado
+                        if (useWifiDirect) {
+                            val stateLabel = when (val s = wifiDirectState) {
+                                is WifiDirectState.Idle -> "Inactivo"
+                                is WifiDirectState.CreatingGroup -> "Creando grupo…"
+                                is WifiDirectState.GroupOwner -> "Grupo creado — esperando Tracker"
+                                is WifiDirectState.Connected -> "Tracker conectado"
+                                is WifiDirectState.Error -> "Error: ${s.msg}"
+                                else -> wifiDirectState.toString()
+                            }
+                            Text(
+                                text = stateLabel,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
                 // Métricas
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Row(
@@ -177,7 +274,10 @@ fun MonitorScreen(
                 // Botones de control
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     if (!state.isConnected) {
-                        Button(onClick = { vm.startListening() }, modifier = Modifier.weight(1f)) {
+                        Button(
+                            onClick = { vm.startListening(useWifiDirect = useWifiDirect) },
+                            modifier = Modifier.weight(1f),
+                        ) {
                             Text("Escuchar")
                         }
                     } else {
@@ -196,6 +296,10 @@ fun MonitorScreen(
                             contentColor = MaterialTheme.colorScheme.error,
                         ),
                     ) { Text("↺ Reset") }
+                    OutlinedButton(
+                        onClick = { imagePicker.launch(arrayOf("image/*")) },
+                        modifier = Modifier.weight(1f),
+                    ) { Text("Mapa") }
                 }
 
                 // Eventos manuales

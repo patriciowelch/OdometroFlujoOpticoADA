@@ -5,6 +5,7 @@ import android.hardware.camera2.CameraManager
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.company.warehousevio.App
 import com.company.warehousevio.core.model.MotionState
 import com.company.warehousevio.core.model.TrackingFailureReason
 import com.company.warehousevio.core.model.TrackingState
@@ -15,20 +16,25 @@ import com.company.warehousevio.data.entity.SessionEntity
 import com.company.warehousevio.network.ProtocolMessage
 import com.company.warehousevio.network.TcpTunnelTransport
 import com.company.warehousevio.network.Transport
+import com.company.warehousevio.network.WifiDirectState
+import com.company.warehousevio.network.WifiDirectTransport
 import com.company.warehousevio.tracking.ArSessionManager
 import com.company.warehousevio.tracking.CalibrationEngine
 import com.company.warehousevio.tracking.MotionClassifier
 import com.company.warehousevio.tracking.PoseTracker
 import com.company.warehousevio.tracking.TrackingHealth
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
 private const val TAG = "TrackerViewModel"
 private const val TCP_PORT = 9876
+private const val NOISE_SAMPLE_DURATION_MS = 5_000L
 
 data class TrackerUiState(
     val isSessionActive: Boolean = false,
@@ -51,6 +57,13 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
     private val trackingHealth = TrackingHealth()
     val calibrationEngine = CalibrationEngine()
 
+    /** Estado de calibración expuesto para la UI. */
+    val calibrationPhase: StateFlow<CalibrationEngine.Phase> = calibrationEngine.phase
+
+    /** Wi-Fi Direct manager del singleton App. */
+    val wifiDirectManager get() = getApplication<App>().wifiDirectManager
+    val wifiDirectState: StateFlow<WifiDirectState> = wifiDirectManager.state
+
     private val _uiState = MutableStateFlow(TrackerUiState())
     val uiState: StateFlow<TrackerUiState> = _uiState
 
@@ -59,7 +72,10 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
     private var trackingJob: Job? = null
     private var networkJob: Job? = null
 
-    fun startSession(useDebugTunnel: Boolean = true) {
+    /** Última pose recibida del poseTracker; actualizada en el loop de tracking. */
+    private var lastPose: PoseTracker.PoseSnapshot? = null
+
+    fun startSession(useWifiDirect: Boolean = false) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isSessionActive = true, connectionError = null)
 
@@ -82,7 +98,7 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
 
             startTracking()
             startTrackingStateMonitor()
-            connectTransport(useDebugTunnel)
+            connectTransport(useWifiDirect)
         }
     }
 
@@ -100,6 +116,9 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
     private fun startTracking() {
         trackingJob = poseTracker.poseFlow
             .onEach { snapshot ->
+                // Guardar última pose para calibración
+                lastPose = snapshot
+
                 val motionEvent = motionClassifier.update(
                     dx = kotlin.math.sin(snapshot.pose.heading) * snapshot.rawDelta,
                     dz = kotlin.math.cos(snapshot.pose.heading) * snapshot.rawDelta,
@@ -169,11 +188,23 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
             .launchIn(viewModelScope)
     }
 
-    private fun connectTransport(useDebugTunnel: Boolean) {
-        val t = TcpTunnelTransport(port = TCP_PORT, isServer = false)
-        transport = t
+    private fun connectTransport(useWifiDirect: Boolean) {
         networkJob = viewModelScope.launch {
             try {
+                val t: Transport = if (useWifiDirect) {
+                    // Iniciar descubrimiento de peers; esperar conexión
+                    wifiDirectManager.discoverPeers()
+                    wifiDirectManager.state.first { it is WifiDirectState.Connected || it is WifiDirectState.Error }
+                    if (wifiDirectManager.state.value is WifiDirectState.Error) {
+                        val err = (wifiDirectManager.state.value as WifiDirectState.Error).msg
+                        _uiState.value = _uiState.value.copy(isConnected = false, connectionError = err)
+                        return@launch
+                    }
+                    WifiDirectTransport(port = TCP_PORT, isServer = false)
+                } else {
+                    TcpTunnelTransport(port = TCP_PORT, isServer = false)
+                }
+                transport = t
                 t.start()
                 _uiState.value = _uiState.value.copy(isConnected = true, connectionError = null)
                 Log.d(TAG, "Conectado al Monitor")
@@ -233,6 +264,49 @@ class TrackerViewModel(application: Application) : AndroidViewModel(application)
                 .onSuccess { _uiState.value = _uiState.value.copy(torchOn = newState) }
                 .onFailure { Log.e(TAG, "Error al cambiar flash: ${it.message}") }
         }
+    }
+
+    // ── Calibración ──────────────────────────────────────────────────────────
+
+    /**
+     * Inicia la captura de escala con la posición actual como punto de partida.
+     */
+    fun startScaleCapture(knownDistanceM: Float) {
+        val pose = lastPose?.pose ?: return
+        calibrationEngine.startScaleCapture(pose.x, pose.z, knownDistanceM)
+    }
+
+    /**
+     * Finaliza la captura de escala con la posición actual como punto final.
+     */
+    fun finishScaleCapture() {
+        val pose = lastPose?.pose ?: return
+        calibrationEngine.finishScaleCapture(pose.x, pose.z)
+    }
+
+    /**
+     * Inicia el muestreo de ruido durante 5 segundos y lo finaliza automáticamente.
+     */
+    fun startNoiseSampling() {
+        calibrationEngine.startNoiseSampling()
+        viewModelScope.launch {
+            // Suscribirse al poseFlow durante 5 segundos para recolectar muestras de Δd
+            val job = poseTracker.poseFlow
+                .onEach { snapshot ->
+                    calibrationEngine.addNoiseSample(snapshot.rawDelta)
+                }
+                .launchIn(this)
+            delay(NOISE_SAMPLE_DURATION_MS)
+            job.cancel()
+            calibrationEngine.finishNoiseSampling()
+        }
+    }
+
+    /**
+     * Aplica el perfil de calibración calculado al PoseTracker.
+     */
+    fun applyCalibration() {
+        poseTracker.calibration = calibrationEngine.currentProfile()
     }
 
     override fun onCleared() {
